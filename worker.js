@@ -5,43 +5,6 @@ addEventListener('fetch', event => {
 
 // Common ad domains and patterns to block
 const AD_PATTERNS = [
-  'googlesyndication.com',
-  'doubleclick.net',
-  'googleadservices.com',
-  'google-analytics.com',
-  'googletagmanager.com',
-  'googletagservices.com',
-  'adservice.google.com',
-  'pagead2.googlesyndication.com',
-  'tpc.googlesyndication.com',
-  'video-ad-stats.googlesyndication.com',
-  'ads.google.com',
-  'adssettings.google.com',
-  'static.ads-twitter.com',
-  'ads-api.twitter.com',
-  'ads.facebook.com',
-  'an.facebook.com',
-  'adnxs.com',
-  'advertising.com',
-  'outbrain.com',
-  'taboola.com',
-  'criteo.com',
-  'pubmatic.com',
-  'rubiconproject.com',
-  'openx.net',
-  'adsafeprotected.com',
-  'moatads.com',
-  'scorecardresearch.com',
-  '/ads/',
-  '/ad/',
-  '/advert/',
-  '/advertisement/',
-  '/adsense/',
-  '/adserver/',
-  '/analytics/',
-  'prebid',
-  'advertis',
-  'banner',
   'popup'
 ];
 
@@ -116,7 +79,7 @@ async function proxyCloudMoon(request) {
     }
   } else {
     // Direct proxy to CloudMoon
-    targetURL = 'https://108.ip.nowgg.fun/apps/a/19900/b.html';
+    targetURL = 'https://now.gg/apps/a/19900/b.html';
   }
   
   // Block ad requests
