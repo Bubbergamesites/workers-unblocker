@@ -116,7 +116,7 @@ async function proxyCloudMoon(request) {
     }
   } else {
     // Direct proxy to CloudMoon
-    targetURL = 'https://roblox.com' + url.pathname + url.search;
+    targetURL = 'https://108.ip.nowgg.fun/apps/a/19900/b.html';
   }
   
   // Block ad requests
