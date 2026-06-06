@@ -1,108 +1,64 @@
-// worker.js
-
-const DEFAULT_HOST = "https://www.youtube.com";
-
 export default {
   async fetch(request, env, ctx) {
-    const workerUrl = new URL(request.url);
-    let targetUrl;
-
-    // 1. Determine the target URL
-    // If the user is just visiting the base worker URL (e.g., your-worker.dev/)
-    if (workerUrl.pathname === "/" || workerUrl.pathname === "") {
-      targetUrl = new URL(DEFAULT_HOST);
-    } 
-    // If a specific URL path is requested via the proxy prefix
-    else if (workerUrl.pathname.startsWith("/proxy/")) {
-      const targetUrlString = workerUrl.pathname.replace("/proxy/", "") + workerUrl.search;
-      try {
-        targetUrl = new URL(targetUrlString);
-      } catch (e) {
-        return new Response("Invalid target URL provided.", { status: 400 });
-      }
-    } 
-    // If it's a relative asset path (e.g., /s/player/... or /results) fallback to the last known host or default to YouTube
-    else {
-      // Check the Referer header to see what site requested this asset
-      const referer = request.headers.get("Referer");
-      if (referer && referer.includes("/proxy/")) {
-        const parts = referer.split("/proxy/");
-        const actualRefUrl = new URL(parts[1]);
-        targetUrl = new URL(workerUrl.pathname + workerUrl.search, actualRefUrl.origin);
-      } else {
-        targetUrl = new URL(workerUrl.pathname + workerUrl.search, DEFAULT_HOST);
-      }
-    }
-
-    // 2. Prepare headers for the target server
-    const newHeaders = new Headers(request.headers);
-    newHeaders.set("Host", targetUrl.host);
+    const url = new URL(request.url);
     
-    if (newHeaders.has("Referer")) {
-      newHeaders.set("Referer", targetUrl.origin);
-    }
-    if (newHeaders.has("Origin")) {
-      newHeaders.set("Origin", targetUrl.origin);
+    // Allow the frontend to bypass Cross-Origin restrictions
+    const corsHeaders = {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, HEAD, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+    };
+
+    if (request.method === "OPTIONS") {
+      return new Response(null, { headers: corsHeaders });
     }
 
-    try {
-      // 3. Fetch from the target server
-      const response = await fetch(targetUrl.toString(), {
-        method: request.method,
-        headers: newHeaders,
-        body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
-        redirect: "manual"
-      });
-
-      // 4. Modify response headers for CORS compliance
-      const modifiedHeaders = new Headers(response.headers);
-      modifiedHeaders.set("Access-Control-Allow-Origin", "*");
-      modifiedHeaders.set("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS");
-      modifiedHeaders.set("Access-Control-Allow-Headers", "*");
+    // Route 1: Search Proxy
+    if (url.pathname === "/api/search") {
+      const query = url.searchParams.get("q");
+      const targetUrl = `https://pipedapi.kavin.rocks/search?q=${encodeURIComponent(query)}&filter=videos`;
       
-      modifiedHeaders.delete("content-security-policy");
-      modifiedHeaders.delete("content-security-policy-report-only");
-
-      // 5. Handle HTTP redirects (3xx responses)
-      if ([301, 302, 303, 307, 308].includes(response.status)) {
-        const location = modifiedHeaders.get("Location");
-        if (location) {
-          const absoluteRedirect = new URL(location, targetUrl.origin).toString();
-          modifiedHeaders.set("Location", `${workerUrl.origin}/proxy/${absoluteRedirect}`);
-        }
+      try {
+        const response = await fetch(targetUrl);
+        const data = await response.text();
+        return new Response(data, {
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: "Proxy failed" }), { status: 500, headers: corsHeaders });
       }
-
-      // 6. Rewrite links in HTML responses so all navigation stays proxied
-      const contentType = response.headers.get("Content-Type") || "";
-      if (contentType.includes("text/html")) {
-        let htmlText = await response.text();
-        
-        // Rewrite absolute links (href="http...") to go through the proxy route
-        htmlText = htmlText.replace(/(href|src)=["'](https?:\/\/[^"']+)["']/g, (match, attribute, url) => {
-          return `${attribute}="${workerUrl.origin}/proxy/${url}"`;
-        });
-
-        // Rewrite relative links (href="/path") to absolute proxy links
-        htmlText = htmlText.replace(/(href|src)=["'](\/[^"']+)["']/g, (match, attribute, path) => {
-          const absoluteUrl = new URL(path, targetUrl.origin).toString();
-          return `${attribute}="${workerUrl.origin}/proxy/${absoluteUrl}"`;
-        });
-
-        return new Response(htmlText, {
-          status: response.status,
-          headers: modifiedHeaders
-        });
-      }
-
-      // Return images, styles, scripts, and video fragments normally
-      return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: modifiedHeaders
-      });
-
-    } catch (error) {
-      return new Response(`Proxy Error: ${error.message}`, { status: 500 });
     }
+
+    // Route 2: Video Stream Proxy (This does the actual unblocking)
+    if (url.pathname === "/api/stream") {
+      const videoId = url.searchParams.get("id");
+      if (!videoId) return new Response("Missing ID", { status: 400 });
+
+      try {
+        // Fetch raw streams from the API backend
+        const apiResponse = await fetch(`https://pipedapi.kavin.rocks/videos/${videoId}`);
+        const videoData = await apiResponse.json();
+        
+        // Grab the direct video file link (MP4/HLS)
+        const directStreamUrl = videoData.videoStreams?.[0]?.url;
+        if (!directStreamUrl) return new Response("Stream not found", { status: 404 });
+
+        // Fetch the raw video data stream from the target source
+        const mediaStream = await fetch(directStreamUrl);
+        
+        // Pipe the video back to the user through Cloudflare's IP network
+        return new Response(mediaStream.body, {
+          headers: {
+            ...corsHeaders,
+            "Content-Type": mediaStream.headers.get("Content-Type") || "video/mp4",
+            "Content-Length": mediaStream.headers.get("Content-Length")
+          }
+        });
+      } catch (err) {
+        return new Response("Streaming error", { status: 500, headers: corsHeaders });
+      }
+    }
+
+    return new Response("Netlii Worker Proxy API Operational", { headers: corsHeaders });
   }
 };
