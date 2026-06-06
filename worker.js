@@ -2,51 +2,63 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     
-    // Allow the frontend to bypass Cross-Origin restrictions
+    // 1. Setup CORS headers so your Cloudflare Pages frontend is allowed to talk to this backend
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, HEAD, POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type",
     };
 
+    // Handle preflight requests
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: corsHeaders });
     }
 
-    // Route 1: Search Proxy
+    // A reliable, privacy-respecting public open API wrapper for YouTube data
+    const PIPED_API = "https://pipedapi.kavin.rocks";
+
+    // 2. ROUTE: Search Proxy
     if (url.pathname === "/api/search") {
       const query = url.searchParams.get("q");
-      const targetUrl = `https://pipedapi.kavin.rocks/search?q=${encodeURIComponent(query)}&filter=videos`;
-      
+      if (!query) {
+        return new Response(JSON.stringify({ error: "Query required" }), { status: 400, headers: corsHeaders });
+      }
+
       try {
+        const targetUrl = `${PIPED_API}/search?q=${encodeURIComponent(query)}&filter=videos`;
         const response = await fetch(targetUrl);
         const data = await response.text();
+        
         return new Response(data, {
           headers: { ...corsHeaders, "Content-Type": "application/json" }
         });
       } catch (err) {
-        return new Response(JSON.stringify({ error: "Proxy failed" }), { status: 500, headers: corsHeaders });
+        return new Response(JSON.stringify({ error: "Failed to fetch search data" }), { status: 500, headers: corsHeaders });
       }
     }
 
-    // Route 2: Video Stream Proxy (This does the actual unblocking)
+    // 3. ROUTE: Video Stream Proxy (The Actual Unblocker Core)
     if (url.pathname === "/api/stream") {
       const videoId = url.searchParams.get("id");
-      if (!videoId) return new Response("Missing ID", { status: 400 });
+      if (!videoId) {
+        return new Response("Video ID required", { status: 400, headers: corsHeaders });
+      }
 
       try {
-        // Fetch raw streams from the API backend
-        const apiResponse = await fetch(`https://pipedapi.kavin.rocks/videos/${videoId}`);
+        // Fetch raw stream endpoints from the alternative backend architecture
+        const apiResponse = await fetch(`${PIPED_API}/videos/${videoId}`);
         const videoData = await apiResponse.json();
         
-        // Grab the direct video file link (MP4/HLS)
+        // Find the first working direct MP4 or video stream URL
         const directStreamUrl = videoData.videoStreams?.[0]?.url;
-        if (!directStreamUrl) return new Response("Stream not found", { status: 404 });
+        if (!directStreamUrl) {
+          return new Response("No unblocked stream source found", { status: 404, headers: corsHeaders });
+        }
 
-        // Fetch the raw video data stream from the target source
+        // Fetch the raw binary data chunks of the video directly using Cloudflare's server infrastructure
         const mediaStream = await fetch(directStreamUrl);
         
-        // Pipe the video back to the user through Cloudflare's IP network
+        // Pass the raw media chunks directly down the network line back to the user's HTML5 video container
         return new Response(mediaStream.body, {
           headers: {
             ...corsHeaders,
@@ -55,10 +67,11 @@ export default {
           }
         });
       } catch (err) {
-        return new Response("Streaming error", { status: 500, headers: corsHeaders });
+        return new Response("Streaming extraction pipeline error", { status: 500, headers: corsHeaders });
       }
     }
 
-    return new Response("Netlii Worker Proxy API Operational", { headers: corsHeaders });
+    // Default Fallback
+    return new Response("Netlii | Watch Engine Online", { headers: corsHeaders });
   }
 };
