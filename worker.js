@@ -79,7 +79,7 @@ async function proxyCloudMoon(request) {
     }
   } else {
     // Direct proxy to CloudMoon
-    targetURL = 'https://now.gg/apps/a/19900/b.html';
+    targetURL = 'https://youtube.com/';
   }
   
   // Block ad requests
