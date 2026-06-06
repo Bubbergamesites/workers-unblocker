@@ -12,78 +12,77 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
-    // A list of redundant public backup APIs to ensure uptime
-    const BACKEND_MIRRORS = [
-      "https://pipedapi.leptons.xyz",
+    // High availability public instance array
+    const MIRRORS = [
       "https://pipedapi.moomoo.me",
+      "https://pipedapi.leptons.xyz",
       "https://piped-api.garudalinux.org",
-      "https://pipedapi.kavin.rocks"
+      "https://pipedapi.tokhmi.xyz"
     ];
 
-    // Helper function that rotates mirrors automatically if one throws an error
-    async function fetchFromMirrors(endpoint) {
-      let lastError = null;
-      for (const mirror of BACKEND_MIRRORS) {
+    async function autoFetch(endpoint) {
+      let errorState = null;
+      for (const base of MIRRORS) {
         try {
-          const res = await fetch(`${mirror}${endpoint}`, {
-            headers: { "User-Agent": "Mozilla/5.0" }
+          const res = await fetch(`${base}${endpoint}`, {
+            headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" }
           });
           if (res.ok) return res;
-        } catch (err) {
-          lastError = err;
+        } catch (e) {
+          errorState = e;
         }
       }
-      throw lastError || new Error("All proxy extraction engines are offline");
+      throw errorState || new Error("All data pipelines timed out.");
     }
 
-    // 1. SEARCH ROUTE
+    // SEARCH ENDPOINT
     if (url.pathname === "/api/search") {
       const query = url.searchParams.get("q");
-      if (!query) return new Response("Missing q parameter", { status: 400, headers: corsHeaders });
+      if (!query) return new Response("[]", { headers: corsHeaders });
 
       try {
-        const response = await fetchFromMirrors(`/search?q=${encodeURIComponent(query)}&filter=videos`);
+        const response = await autoFetch(`/search?q=${encodeURIComponent(query)}&filter=videos`);
         const data = await response.text();
         return new Response(data, {
           headers: { ...corsHeaders, "Content-Type": "application/json" }
         });
       } catch (err) {
-        return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        return new Response(JSON.stringify([]), { headers: corsHeaders });
       }
     }
 
-    // 2. STREAM ROUTE
+    // STREAM PIPELINE ENDPOINT
     if (url.pathname === "/api/stream") {
       const videoId = url.searchParams.get("id");
-      if (!videoId) return new Response("Missing video ID", { status: 400, headers: corsHeaders });
+      if (!videoId) return new Response("Missing video parameter ID", { status: 400, headers: corsHeaders });
 
       try {
-        const apiResponse = await fetchFromMirrors(`/videos/${videoId}`);
+        const apiResponse = await autoFetch(`/videos/${videoId}`);
         const videoData = await apiResponse.json();
         
-        // Find a high-quality video stream endpoint
-        const directStreamUrl = videoData.videoStreams?.find(s => s.videoOnly === false)?.url || videoData.videoStreams?.[0]?.url;
+        // Find streams containing both audio and video tracks synchronously
+        const chosenStream = videoData.videoStreams?.find(s => s.videoOnly === false) || videoData.videoStreams?.[0];
         
-        if (!directStreamUrl) {
-          return new Response("No unblocked source found", { status: 404, headers: corsHeaders });
+        if (!chosenStream || !chosenStream.url) {
+          return new Response("No unblocked format track available", { status: 404, headers: corsHeaders });
         }
 
-        // Fetch video file binary segments directly via Cloudflare's server IP
-        const mediaStream = await fetch(directStreamUrl);
+        // Direct stream bridge request via cloud flare proxies
+        const mediaRequest = await fetch(chosenStream.url);
         
-        return new Response(mediaStream.body, {
+        return new Response(mediaRequest.body, {
           headers: {
             ...corsHeaders,
-            "Content-Type": mediaStream.headers.get("Content-Type") || "video/mp4",
-            "Content-Length": mediaStream.headers.get("Content-Length"),
+            "Content-Type": mediaRequest.headers.get("Content-Type") || "video/mp4",
+            "Content-Length": mediaRequest.headers.get("Content-Length"),
             "Cache-Control": "public, max-age=3600"
           }
         });
       } catch (err) {
-        return new Response("Media sync error: " + err.message, { status: 500, headers: corsHeaders });
+        return new Response("Pipeline Error: " + err.message, { status: 500, headers: corsHeaders });
       }
     }
 
-    return new Response("Netlii Engine Operational", { headers: corsHeaders });
+    return new Response("Netlii Core Up", { headers: corsHeaders });
   }
 };
