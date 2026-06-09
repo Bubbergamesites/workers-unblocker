@@ -1,88 +1,99 @@
+// worker.js
+
 export default {
   async fetch(request, env, ctx) {
-    const url = new URL(request.url);
+    const workerUrl = new URL(request.url);
     
-    const corsHeaders = {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, HEAD, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
-    };
-
-    if (request.method === "OPTIONS") {
-      return new Response(null, { headers: corsHeaders });
+    // We expect the URL format to be: https://your-worker.dev/proxy/https://target-site.com/path
+    if (!workerUrl.pathname.startsWith("/proxy/")) {
+      return new Response(
+        `<h1>Universal Proxy</h1><p>To use, append the target URL to the path. Example:</p>
+         <code>${workerUrl.origin}/proxy/https://example.com</code>`,
+        { headers: { "Content-Type": "text/html" } }
+      );
     }
 
-    // High availability public instance array
-    const MIRRORS = [
-      "https://pipedapi.moomoo.me",
-      "https://pipedapi.leptons.xyz",
-      "https://piped-api.garudalinux.org",
-      "https://pipedapi.tokhmi.xyz"
-    ];
+    // Extract the destination URL from the path
+    const targetUrlString = workerUrl.pathname.replace("/proxy/", "") + workerUrl.search;
+    
+    let targetUrl;
+    try {
+      targetUrl = new URL(targetUrlString);
+    } catch (e) {
+      return new Response("Invalid target URL provided.", { status: 400 });
+    }
 
-    async function autoFetch(endpoint) {
-      let errorState = null;
-      for (const base of MIRRORS) {
-        try {
-          const res = await fetch(`${base}${endpoint}`, {
-            headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" }
-          });
-          if (res.ok) return res;
-        } catch (e) {
-          errorState = e;
+    // Clone and prepare headers for the destination server
+    const newHeaders = new Headers(request.headers);
+    newHeaders.set("Host", targetUrl.host);
+    
+    if (newHeaders.has("Referer")) {
+      newHeaders.set("Referer", targetUrl.origin);
+    }
+    if (newHeaders.has("Origin")) {
+      newHeaders.set("Origin", targetUrl.origin);
+    }
+
+    try {
+      // Fetch the requested resource
+      const response = await fetch(targetUrl.toString(), {
+        method: request.method,
+        headers: newHeaders,
+        body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
+        redirect: "manual"
+      });
+
+      // Clone response headers and modify CORS policy
+      const modifiedHeaders = new Headers(response.headers);
+      modifiedHeaders.set("Access-Control-Allow-Origin", "*");
+      modifiedHeaders.set("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS");
+      modifiedHeaders.set("Access-Control-Allow-Headers", "*");
+      
+      // Strip restrictive security policies so assets render properly through the proxy
+      modifiedHeaders.delete("content-security-policy");
+      modifiedHeaders.delete("content-security-policy-report-only");
+
+      // Handle Redirects (3xx responses)
+      if ([301, 302, 303, 307, 308].includes(response.status)) {
+        const location = modifiedHeaders.get("Location");
+        if (location) {
+          const absoluteRedirect = new URL(location, targetUrl.origin).toString();
+          // Force the redirect to go back through this worker proxy route
+          modifiedHeaders.set("Location", `${workerUrl.origin}/proxy/${absoluteRedirect}`);
         }
       }
-      throw errorState || new Error("All data pipelines timed out.");
-    }
 
-    // SEARCH ENDPOINT
-    if (url.pathname === "/api/search") {
-      const query = url.searchParams.get("q");
-      if (!query) return new Response("[]", { headers: corsHeaders });
-
-      try {
-        const response = await autoFetch(`/search?q=${encodeURIComponent(query)}&filter=videos`);
-        const data = await response.text();
-        return new Response(data, {
-          headers: { ...corsHeaders, "Content-Type": "application/json" }
+      // If the content is HTML, rewrite links so subsequent clicks stay in the proxy
+      const contentType = response.headers.get("Content-Type") || "";
+      if (contentType.includes("text/html")) {
+        let htmlText = await response.text();
+        
+        // Rewrite absolute links (href="http...") to go through the proxy
+        htmlText = htmlText.replace(/(href|src)=["'](https?:\/\/[^"']+)["']/g, (match, attribute, url) => {
+          return `${attribute}="${workerUrl.origin}/proxy/${url}"`;
         });
-      } catch (err) {
-        return new Response(JSON.stringify([]), { headers: corsHeaders });
-      }
-    }
 
-    // STREAM PIPELINE ENDPOINT
-    if (url.pathname === "/api/stream") {
-      const videoId = url.searchParams.get("id");
-      if (!videoId) return new Response("Missing video parameter ID", { status: 400, headers: corsHeaders });
-
-      try {
-        const apiResponse = await autoFetch(`/videos/${videoId}`);
-        const videoData = await apiResponse.json();
-        
-        // Find streams containing both audio and video tracks synchronously
-        const chosenStream = videoData.videoStreams?.find(s => s.videoOnly === false) || videoData.videoStreams?.[0];
-        
-        if (!chosenStream || !chosenStream.url) {
-          return new Response("No unblocked format track available", { status: 404, headers: corsHeaders });
-        }
-
-        // Direct stream bridge request via cloud flare proxies
-        const mediaRequest = await fetch(chosenStream.url);
-        
-        return new Response(mediaRequest.body, {
-          headers: {
-            ...corsHeaders,
-            "Content-Type": mediaRequest.headers.get("Content-Type") || "video/mp4",
-            "Content-Length": mediaRequest.headers.get("Content-Length"),
-            "Cache-Control": "public, max-age=3600"
-          }
+        // Rewrite relative links (href="/path") to absolute proxy links
+        htmlText = htmlText.replace(/(href|src)=["'](\/[^"']+)["']/g, (match, attribute, path) => {
+          const absoluteUrl = new URL(path, targetUrl.origin).toString();
+          return `${attribute}="${workerUrl.origin}/proxy/${absoluteUrl}"`;
         });
-      } catch (err) {
-        return new Response("Pipeline Error: " + err.message, { status: 500, headers: corsHeaders });
-      }
-    }
 
-    return new Response("Netlii Core Up", { headers: corsHeaders });
+        return new Response(htmlText, {
+          status: response.status,
+          headers: modifiedHeaders
+        });
+      }
+
+      // For non-HTML assets (images, stylesheets, scripts), return the stream raw
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: modifiedHeaders
+      });
+
+    } catch (error) {
+      return new Response(`Universal Proxy Error: ${error.message}`, { status: 500 });
+    }
   }
 };
