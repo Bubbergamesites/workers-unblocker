@@ -1,99 +1,75 @@
 // worker.js
 
+const TARGET_HOST = "www.youtube.com";
+
 export default {
   async fetch(request, env, ctx) {
-    const workerUrl = new URL(request.url);
+    const url = new URL(request.url);
     
-    // We expect the URL format to be: https://your-worker.dev/proxy/https://target-site.com/path
-    if (!workerUrl.pathname.startsWith("/proxy/")) {
-      return new Response(
-        `<h1>Universal Proxy</h1><p>To use, append the target URL to the path. Example:</p>
-         <code>${workerUrl.origin}/proxy/https://example.com</code>`,
-        { headers: { "Content-Type": "text/html" } }
-      );
-    }
+    // 1. Change the hostname from your Worker's URL to YouTube's URL
+    url.hostname = TARGET_HOST;
+    url.protocol = "https:";
 
-    // Extract the destination URL from the path
-    const targetUrlString = workerUrl.pathname.replace("/proxy/", "") + workerUrl.search;
-    
-    let targetUrl;
-    try {
-      targetUrl = new URL(targetUrlString);
-    } catch (e) {
-      return new Response("Invalid target URL provided.", { status: 400 });
-    }
-
-    // Clone and prepare headers for the destination server
+    // 2. Clone the original request headers
     const newHeaders = new Headers(request.headers);
-    newHeaders.set("Host", targetUrl.host);
-    
+
+    // Update host and referrer headers so YouTube thinks the request came directly
+    newHeaders.set("Host", TARGET_HOST);
+    newHeaders.set("Origin", `https://${TARGET_HOST}`);
     if (newHeaders.has("Referer")) {
-      newHeaders.set("Referer", targetUrl.origin);
+      newHeaders.set("Referer", `https://${TARGET_HOST}/`);
     }
-    if (newHeaders.has("Origin")) {
-      newHeaders.set("Origin", targetUrl.origin);
-    }
+
+    // 3. Create the modified request to fetch from YouTube
+    const modifiedRequest = new Request(url.toString(), {
+      method: request.method,
+      headers: newHeaders,
+      body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
+      redirect: "manual", // Handle redirects manually to prevent dropping cookies/headers
+    });
 
     try {
-      // Fetch the requested resource
-      const response = await fetch(targetUrl.toString(), {
-        method: request.method,
-        headers: newHeaders,
-        body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
-        redirect: "manual"
-      });
+      // 4. Send the request to YouTube's servers
+      const response = await fetch(modifiedRequest);
 
-      // Clone response headers and modify CORS policy
+      // 5. Clone the response headers to modify them for your browser
       const modifiedHeaders = new Headers(response.headers);
+
+      // Inject CORS headers so your custom HTML front-ends can read the data
       modifiedHeaders.set("Access-Control-Allow-Origin", "*");
       modifiedHeaders.set("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS");
       modifiedHeaders.set("Access-Control-Allow-Headers", "*");
-      
-      // Strip restrictive security policies so assets render properly through the proxy
+
+      // Remove restrictive Content Security Policies (CSP) so the page can load assets smoothly
       modifiedHeaders.delete("content-security-policy");
       modifiedHeaders.delete("content-security-policy-report-only");
 
-      // Handle Redirects (3xx responses)
+      // Handle redirects: If YouTube redirects the browser, rewrite the redirect target to use your worker domain
       if ([301, 302, 303, 307, 308].includes(response.status)) {
         const location = modifiedHeaders.get("Location");
         if (location) {
-          const absoluteRedirect = new URL(location, targetUrl.origin).toString();
-          // Force the redirect to go back through this worker proxy route
-          modifiedHeaders.set("Location", `${workerUrl.origin}/proxy/${absoluteRedirect}`);
+          try {
+            const redirectUrl = new URL(location, `https://${TARGET_HOST}`);
+            if (redirectUrl.hostname === TARGET_HOST) {
+              redirectUrl.hostname = new URL(request.url).hostname;
+              redirectUrl.protocol = new URL(request.url).protocol;
+              modifiedHeaders.set("Location", redirectUrl.toString());
+            }
+          } catch (e) {
+            // Leave location intact if parsing fails
+          }
         }
       }
 
-      // If the content is HTML, rewrite links so subsequent clicks stay in the proxy
-      const contentType = response.headers.get("Content-Type") || "";
-      if (contentType.includes("text/html")) {
-        let htmlText = await response.text();
-        
-        // Rewrite absolute links (href="http...") to go through the proxy
-        htmlText = htmlText.replace(/(href|src)=["'](https?:\/\/[^"']+)["']/g, (match, attribute, url) => {
-          return `${attribute}="${workerUrl.origin}/proxy/${url}"`;
-        });
-
-        // Rewrite relative links (href="/path") to absolute proxy links
-        htmlText = htmlText.replace(/(href|src)=["'](\/[^"']+)["']/g, (match, attribute, path) => {
-          const absoluteUrl = new URL(path, targetUrl.origin).toString();
-          return `${attribute}="${workerUrl.origin}/proxy/${absoluteUrl}"`;
-        });
-
-        return new Response(htmlText, {
-          status: response.status,
-          headers: modifiedHeaders
-        });
-      }
-
-      // For non-HTML assets (images, stylesheets, scripts), return the stream raw
+      // 6. Return the proxied response back to the client browser
       return new Response(response.body, {
         status: response.status,
         statusText: response.statusText,
-        headers: modifiedHeaders
+        headers: modifiedHeaders,
       });
 
     } catch (error) {
-      return new Response(`Universal Proxy Error: ${error.message}`, { status: 500 });
+      return new Response(`Worker Proxy Error: ${error.message}`, { status: 500 });
     }
-  }
+  },
 };
