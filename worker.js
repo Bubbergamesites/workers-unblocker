@@ -145,7 +145,7 @@ async function proxyCloudMoon(request) {
       return new Response("Invalid proxy URL", { status: 400 });
     }
   } else {
-    targetURL = "https://web.cloudmoonapp.com" + url.pathname + url.search;
+    targetURL = "https://chimp.dpdns.org" + url.pathname + url.search;
   }
   if (isAdRequest(targetURL)) {
     console.log("[Ad Blocked] Blocked an add URL request for recource savings:", targetURL);
